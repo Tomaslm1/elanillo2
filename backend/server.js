@@ -1,12 +1,16 @@
 require('dotenv').config();
+const path = require('path');
 const express = require('express');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const cookieParser = require('cookie-parser');
+const cors = require('cors');
 
 const app = express();
 app.use(express.json());
 app.use(cookieParser());
+app.use(cors({ origin: true, credentials: true }));
+app.use(express.static(path.join(__dirname, '../frontend')));
 
 /**
  * Demo users store.
@@ -17,19 +21,61 @@ const users = [
   {
     id: 1,
     username: 'test@example.com',
-    // password: 'password123'
+    name: 'Usuario Demo',
     passwordHash: bcrypt.hashSync('password123', 8),
   },
 ];
+
+function serializeUser(user) {
+  return {
+    id: user.id,
+    username: user.username,
+    name: user.name,
+  };
+}
+
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, '../frontend/index.html'));
+});
+
+app.post('/api/register', async (req, res) => {
+  const { username, password, name } = req.body || {};
+  const cleanUsername = String(username || '').trim();
+  const cleanPassword = String(password || '').trim();
+  const cleanName = String(name || '').trim();
+
+  if (!cleanUsername || !cleanPassword || !cleanName) {
+    return res.status(400).json({ error: 'Faltan datos requeridos' });
+  }
+
+  const existingUser = users.find((user) => user.username.toLowerCase() === cleanUsername.toLowerCase());
+  if (existingUser) {
+    return res.status(409).json({ error: 'El usuario ya existe' });
+  }
+
+  const newUser = {
+    id: Date.now(),
+    username: cleanUsername,
+    name: cleanName,
+    passwordHash: bcrypt.hashSync(cleanPassword, 8),
+  };
+
+  users.push(newUser);
+
+  return res.status(201).json({
+    message: 'Usuario registrado correctamente',
+    user: serializeUser(newUser),
+  });
+});
 
 app.post('/api/login', async (req, res) => {
   const { username, password } = req.body || {};
   if (!username || !password) return res.status(400).json({ error: 'Faltan credenciales' });
 
-  const user = users.find((u) => u.username === username);
+  const user = users.find((u) => u.username.toLowerCase() === String(username).trim().toLowerCase());
   if (!user) return res.status(401).json({ error: 'Credenciales inválidas' });
 
-  const match = await bcrypt.compare(password, user.passwordHash);
+  const match = await bcrypt.compare(String(password), user.passwordHash);
   if (!match) return res.status(401).json({ error: 'Credenciales inválidas' });
 
   const token = jwt.sign({ sub: user.id, username: user.username }, process.env.JWT_SECRET || 'dev-secret', {
@@ -44,7 +90,10 @@ app.post('/api/login', async (req, res) => {
     maxAge: 60 * 60 * 1000, // 1 hora en ms
   });
 
-  return res.json({ message: 'Autenticado' });
+  return res.json({
+    message: 'Autenticado',
+    user: serializeUser(user),
+  });
 });
 
 // Optional: route para comprobar token (ejemplo de dashboard)

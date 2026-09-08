@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Elanillo - Login y Registro</title>
+    <style>
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: Arial, sans-serif;
+        background: linear-gradient(135deg, #f6f7fb, #e8eefc);
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .auth-card {
+        width: min(420px, 90vw);
+        background: white;
+        border-radius: 16px;
+        box-shadow: 0 18px 45px rgba(15, 23, 42, 0.12);
+        padding: 28px;
+      }
+      .tabs {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 20px;
+      }
+      .tab {
+        flex: 1;
+        border: none;
+        border-radius: 10px;
+        padding: 10px 12px;
+        font-weight: 700;
+        cursor: pointer;
+        background: #edf2ff;
+        color: #345;
+      }
+      .tab.active {
+        background: #2f6fed;
+        color: white;
+      }
+      form {
+        display: none;
+        flex-direction: column;
+        gap: 14px;
+      }
+      form.active {
+        display: flex;
+      }
+      label {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        font-size: 0.9rem;
+        color: #334155;
+      }
+      input {
+        border: 1px solid #cbd5e1;
+        border-radius: 10px;
+        padding: 12px 14px;
+        font-size: 1rem;
+      }
+      button[type="submit"] {
+        border: none;
+        border-radius: 10px;
+        padding: 12px;
+        background: #1d4ed8;
+        color: white;
+        font-size: 1rem;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      .status {
+        min-height: 20px;
+        margin-top: 10px;
+        font-size: 0.92rem;
+      }
+      .status.error { color: #b91c1c; }
+      .status.success { color: #15803d; }
+    </style>
+  </head>
+  <body>
+    <div class="auth-card">
+      <div class="tabs">
+        <button class="tab active" data-tab="login" type="button">Iniciar sesión</button>
+        <button class="tab" data-tab="register" type="button">Registrarse</button>
+      </div>
+
+      <form id="loginForm" class="active">
+        <label>
+          Email
+          <input type="email" name="username" placeholder="test@example.com" required />
+        </label>
+        <label>
+          Contraseña
+          <input type="password" name="password" placeholder="********" required />
+        </label>
+        <button type="submit">Entrar</button>
+      </form>
+
+      <form id="registerForm">
+        <label>
+          Nombre completo
+          <input type="text" name="name" placeholder="Tu nombre" required />
+        </label>
+        <label>
+          Email
+          <input type="email" name="username" placeholder="tu@email.com" required />
+        </label>
+        <label>
+          Contraseña
+          <input type="password" name="password" placeholder="Mínimo 6 caracteres" required />
+        </label>
+        <button type="submit">Crear cuenta</button>
+      </form>
+
+      <div id="status" class="status"></div>
+    </div>
+
+    <script>
+      const apiBase = 'http://localhost:3001';
+      const tabs = document.querySelectorAll('.tab');
+      const forms = {
+        login: document.getElementById('loginForm'),
+        register: document.getElementById('registerForm'),
+      };
+      const statusEl = document.getElementById('status');
+
+      function setMessage(message, type = '') {
+        statusEl.textContent = message;
+        statusEl.className = `status ${type}`.trim();
+      }
+
+      tabs.forEach((tab) => {
+        tab.addEventListener('click', () => {
+          const target = tab.dataset.tab;
+          tabs.forEach((btn) => btn.classList.toggle('active', btn === tab));
+          Object.entries(forms).forEach(([key, form]) => {
+            form.classList.toggle('active', key === target);
+          });
+          setMessage('');
+        });
+      });
+
+      forms.login.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const formData = new FormData(forms.login);
+        const payload = {
+          username: formData.get('username'),
+          password: formData.get('password'),
+        };
+
+        try {
+          const response = await fetch(`${apiBase}/api/login`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify(payload),
+          });
+          const data = await response.json();
+
+          if (!response.ok) {
+            setMessage(data.error || 'Error al iniciar sesión', 'error');
+            return;
+          }
+
+          setMessage(`Bienvenido ${data.user?.name || data.user?.username}`, 'success');
+          console.log('Login ok:', data);
+        } catch (error) {
+          setMessage('No se pudo conectar con el servidor', 'error');
+        }
+      });
+
+      forms.register.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const formData = new FormData(forms.register);
+        const payload = {
+          name: formData.get('name'),
+          username: formData.get('username'),
+          password: formData.get('password'),
+        };
+
+        try {
+          const response = await fetch(`${apiBase}/api/register`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
+            body: JSON.stringify(payload),
+          });
+          const data = await response.json();
+
+          if (!response.ok) {
+            setMessage(data.error || 'Error al registrar usuario', 'error');
+            return;
+          }
+
+          setMessage('Registro exitoso. Ya puedes iniciar sesión.', 'success');
+          forms.register.reset();
+          tabs.forEach((tab) => tab.classList.toggle('active', tab.dataset.tab === 'login'));
+          Object.entries(forms).forEach(([key, form]) => {
+            form.classList.toggle('active', key === 'login');
+          });
+        } catch (error) {
+          setMessage('No se pudo completar el registro', 'error');
+        }
+      });
+    </script>
+  </body>
+</html>
