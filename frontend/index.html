@@ -41,6 +41,26 @@
         background: #2f6fed;
         color: white;
       }
+      .text-link {
+        border: 0;
+        padding: 0;
+        background: transparent;
+        color: #1d4ed8;
+        cursor: pointer;
+        font: inherit;
+        text-align: left;
+      }
+      .helper {
+        margin: -4px 0 0;
+        font-size: 0.9rem;
+        color: #475569;
+      }
+      .dev-link {
+        display: block;
+        margin-top: 8px;
+        overflow-wrap: anywhere;
+        font-size: 0.85rem;
+      }
       form {
         display: none;
         flex-direction: column;
@@ -98,6 +118,7 @@
           <input type="password" name="password" placeholder="********" required />
         </label>
         <button type="submit">Entrar</button>
+        <button class="text-link" id="forgotPasswordLink" type="button">¿Olvidaste tu contraseña?</button>
       </form>
 
       <form id="registerForm">
@@ -116,6 +137,29 @@
         <button type="submit">Crear cuenta</button>
       </form>
 
+      <form id="forgotForm">
+        <p class="helper">Ingresa tu correo y te enviaremos instrucciones para recuperar el acceso.</p>
+        <label>
+          Email
+          <input type="email" name="username" placeholder="tu@email.com" required />
+        </label>
+        <button type="submit">Enviar instrucciones</button>
+        <button class="text-link" id="backToLoginLink" type="button">Volver a iniciar sesión</button>
+      </form>
+
+      <form id="resetForm">
+        <p class="helper">Define una nueva contraseña para tu cuenta.</p>
+        <label>
+          Nueva contraseña
+          <input type="password" name="password" minlength="6" placeholder="Mínimo 6 caracteres" required />
+        </label>
+        <label>
+          Confirmar contraseña
+          <input type="password" name="passwordConfirmation" minlength="6" placeholder="Repite tu contraseña" required />
+        </label>
+        <button type="submit">Restablecer contraseña</button>
+      </form>
+
       <div id="status" class="status"></div>
     </div>
 
@@ -125,24 +169,34 @@
       const forms = {
         login: document.getElementById('loginForm'),
         register: document.getElementById('registerForm'),
+        forgot: document.getElementById('forgotForm'),
+        reset: document.getElementById('resetForm'),
       };
       const statusEl = document.getElementById('status');
+      const resetToken = new URLSearchParams(window.location.search).get('token');
 
       function setMessage(message, type = '') {
         statusEl.textContent = message;
         statusEl.className = `status ${type}`.trim();
       }
 
+      function showForm(target) {
+        tabs.forEach((tab) => tab.classList.toggle('active', tab.dataset.tab === target));
+        Object.entries(forms).forEach(([key, form]) => {
+          form.classList.toggle('active', key === target);
+        });
+        setMessage('');
+      }
+
       tabs.forEach((tab) => {
         tab.addEventListener('click', () => {
           const target = tab.dataset.tab;
-          tabs.forEach((btn) => btn.classList.toggle('active', btn === tab));
-          Object.entries(forms).forEach(([key, form]) => {
-            form.classList.toggle('active', key === target);
-          });
-          setMessage('');
+          showForm(target);
         });
       });
+
+      document.getElementById('forgotPasswordLink').addEventListener('click', () => showForm('forgot'));
+      document.getElementById('backToLoginLink').addEventListener('click', () => showForm('login'));
 
       forms.login.addEventListener('submit', async (event) => {
         event.preventDefault();
@@ -172,6 +226,74 @@
           setMessage('No se pudo conectar con el servidor', 'error');
         }
       });
+
+      forms.forgot.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const formData = new FormData(forms.forgot);
+
+        try {
+          const response = await fetch(`${apiBase}/api/request-password-reset`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: formData.get('username') }),
+          });
+          const data = await response.json();
+
+          if (!response.ok) {
+            setMessage(data.error || 'No se pudo solicitar la recuperación', 'error');
+            return;
+          }
+
+          setMessage(data.message, 'success');
+          forms.forgot.reset();
+          if (data.resetToken) {
+            const resetUrl = `${window.location.origin}${window.location.pathname}?token=${encodeURIComponent(data.resetToken)}`;
+            const link = document.createElement('a');
+            link.className = 'dev-link';
+            link.href = resetUrl;
+            link.textContent = 'Abrir enlace de recuperación (desarrollo)';
+            statusEl.appendChild(link);
+          }
+        } catch (error) {
+          setMessage('No se pudo conectar con el servidor', 'error');
+        }
+      });
+
+      forms.reset.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const formData = new FormData(forms.reset);
+        const password = formData.get('password');
+        const passwordConfirmation = formData.get('passwordConfirmation');
+
+        if (password !== passwordConfirmation) {
+          setMessage('Las contraseñas no coinciden', 'error');
+          return;
+        }
+
+        try {
+          const response = await fetch(`${apiBase}/api/reset-password`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token: resetToken, password }),
+          });
+          const data = await response.json();
+
+          if (!response.ok) {
+            setMessage(data.error || 'No se pudo restablecer la contraseña', 'error');
+            return;
+          }
+
+          setMessage(`${data.message}. Ya puedes iniciar sesión.`, 'success');
+          forms.reset.reset();
+        } catch (error) {
+          setMessage('No se pudo conectar con el servidor', 'error');
+        }
+      });
+
+      if (resetToken) {
+        tabs.forEach((tab) => { tab.hidden = true; });
+        showForm('reset');
+      }
 
       forms.register.addEventListener('submit', async (event) => {
         event.preventDefault();

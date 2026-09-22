@@ -1,5 +1,6 @@
 require('dotenv').config();
 const path = require('path');
+const crypto = require('crypto');
 const express = require('express');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
@@ -7,6 +8,8 @@ const cookieParser = require('cookie-parser');
 const cors = require('cors');
 
 const app = express();
+const passwordResetTokens = new Map();
+const resetTokenTtlMs = Number(process.env.RESET_TOKEN_TTL_MINUTES || 15) * 60 * 1000;
 app.use(express.json());
 app.use(cookieParser());
 app.use(cors({ origin: true, credentials: true }));
@@ -32,6 +35,10 @@ function serializeUser(user) {
     username: user.username,
     name: user.name,
   };
+}
+
+function hashResetToken(token) {
+  return crypto.createHash('sha256').update(token).digest('hex');
 }
 
 app.get('/', (req, res) => {
@@ -94,6 +101,59 @@ app.post('/api/login', async (req, res) => {
     message: 'Autenticado',
     user: serializeUser(user),
   });
+});
+
+app.post('/api/request-password-reset', (req, res) => {
+  const cleanUsername = String(req.body?.username || req.body?.email || '').trim();
+  const response = {
+    message: 'Si la cuenta existe, recibirás instrucciones para restablecer tu contraseña.',
+  };
+
+  if (!cleanUsername) {
+    return res.status(400).json({ error: 'Ingresa un correo electrónico' });
+  }
+
+  const user = users.find((candidate) => candidate.username.toLowerCase() === cleanUsername.toLowerCase());
+  if (!user) return res.json(response);
+
+  const token = crypto.randomBytes(32).toString('hex');
+  passwordResetTokens.set(hashResetToken(token), {
+    userId: user.id,
+    expiresAt: Date.now() + resetTokenTtlMs,
+  });
+
+  // Mientras no exista un proveedor de correo, se devuelve para completar el flujo en desarrollo.
+  return res.json({ ...response, resetToken: token });
+});
+
+app.post('/api/reset-password', async (req, res) => {
+  const token = String(req.body?.token || '').trim();
+  const newPassword = String(req.body?.password || '');
+
+  if (!token || !newPassword) {
+    return res.status(400).json({ error: 'El token y la nueva contraseña son obligatorios' });
+  }
+  if (newPassword.length < 6) {
+    return res.status(400).json({ error: 'La contraseña debe tener al menos 6 caracteres' });
+  }
+
+  const tokenHash = hashResetToken(token);
+  const resetRequest = passwordResetTokens.get(tokenHash);
+  if (!resetRequest) return res.status(400).json({ error: 'El enlace de recuperación no es válido' });
+  if (resetRequest.expiresAt <= Date.now()) {
+    passwordResetTokens.delete(tokenHash);
+    return res.status(400).json({ error: 'El enlace de recuperación expiró' });
+  }
+
+  const user = users.find((candidate) => candidate.id === resetRequest.userId);
+  if (!user) {
+    passwordResetTokens.delete(tokenHash);
+    return res.status(400).json({ error: 'El enlace de recuperación no es válido' });
+  }
+
+  user.passwordHash = await bcrypt.hash(newPassword, 8);
+  passwordResetTokens.delete(tokenHash);
+  return res.json({ message: 'Contraseña actualizada correctamente' });
 });
 
 // Optional: route para comprobar token (ejemplo de dashboard)
