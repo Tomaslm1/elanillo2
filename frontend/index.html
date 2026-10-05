@@ -92,6 +92,32 @@
         font-weight: 700;
         cursor: pointer;
       }
+      .divider {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        color: #64748b;
+        font-size: 0.85rem;
+      }
+      .divider::before,
+      .divider::after {
+        content: '';
+        flex: 1;
+        height: 1px;
+        background: #e2e8f0;
+      }
+      .sso-button {
+        border: 1px solid #cbd5e1;
+        border-radius: 10px;
+        padding: 12px;
+        background: white;
+        color: #1e293b;
+        font-size: 1rem;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      .sso-button:hover { background: #f8fafc; }
+      .sso-button:disabled { opacity: 0.6; cursor: wait; }
       .status {
         min-height: 20px;
         margin-top: 10px;
@@ -119,6 +145,9 @@
         </label>
         <button type="submit">Entrar</button>
         <button class="text-link" id="forgotPasswordLink" type="button">¿Olvidaste tu contraseña?</button>
+        <div class="divider">o</div>
+        <!-- type="button": no envía el formulario, solo redirige al backend que inicia el flujo SSO -->
+        <button class="sso-button" id="ssoGoogleButton" type="button">Continuar con Google</button>
       </form>
 
       <form id="registerForm">
@@ -198,6 +227,89 @@
       document.getElementById('forgotPasswordLink').addEventListener('click', () => showForm('forgot'));
       document.getElementById('backToLoginLink').addEventListener('click', () => showForm('login'));
 
+      // --- Sesión: renovación automática del access token ---
+      // Si el servidor responde 401, se intenta /api/refresh una sola vez y se repite la petición.
+      // Se comparte una única renovación en curso: el refresh token es de un solo uso, así que
+      // dos renovaciones en paralelo harían que la segunda fallara.
+      let refreshInFlight = null;
+
+      function refreshSession() {
+        if (!refreshInFlight) {
+          refreshInFlight = fetch(`${apiBase}/api/refresh`, { method: 'POST', credentials: 'include' })
+            .then((response) => response.ok)
+            .catch(() => false)
+            .finally(() => { refreshInFlight = null; });
+        }
+        return refreshInFlight;
+      }
+
+      // Usar esta función en vez de fetch para cualquier ruta protegida.
+      async function fetchWithRefresh(path, options = {}) {
+        const send = () => fetch(`${apiBase}${path}`, { ...options, credentials: 'include' });
+        let response = await send();
+        if (response.status === 401 && (await refreshSession())) {
+          response = await send();
+        }
+        return response;
+      }
+
+      function showSession(user) {
+        setMessage(`Sesión iniciada: ${user?.name || user?.username}. `, 'success');
+        const logoutButton = document.createElement('button');
+        logoutButton.type = 'button';
+        logoutButton.className = 'text-link';
+        logoutButton.textContent = 'Cerrar sesión';
+        logoutButton.addEventListener('click', async () => {
+          try {
+            await fetch(`${apiBase}/api/logout`, { method: 'POST', credentials: 'include' });
+            setMessage('Sesión cerrada', 'success');
+          } catch (error) {
+            setMessage('No se pudo cerrar la sesión', 'error');
+          }
+        });
+        statusEl.appendChild(logoutButton);
+      }
+
+      async function restoreSession({ announceFailure = false } = {}) {
+        try {
+          const response = await fetchWithRefresh('/api/me');
+          if (!response.ok) {
+            if (announceFailure) setMessage(ssoErrorMessages.sso_failed, 'error');
+            return;
+          }
+          const data = await response.json();
+          showSession(data.user);
+        } catch (error) {
+          if (announceFailure) setMessage('No se pudo conectar con el servidor', 'error');
+        }
+      }
+
+      // --- SSO ---
+      const ssoErrorMessages = {
+        sso_not_configured: 'El inicio de sesión con Google no está configurado en el servidor.',
+        access_denied: 'Cancelaste el inicio de sesión con Google.',
+        invalid_state: 'La solicitud de inicio de sesión no es válida o expiró. Intenta de nuevo.',
+        email_not_verified: 'Tu cuenta de Google no tiene el correo verificado.',
+        account_exists: 'Ese correo ya está registrado con contraseña. Inicia sesión con tu contraseña.',
+        sso_failed: 'No se pudo completar el inicio de sesión con Google.',
+      };
+
+      // El botón solo navega al backend, que redirige a Google (no se puede usar fetch: es un redirect entre sitios).
+      document.getElementById('ssoGoogleButton').addEventListener('click', (event) => {
+        event.currentTarget.disabled = true;
+        setMessage('Redirigiendo a Google...');
+        window.location.href = `${apiBase}/api/auth/google`;
+      });
+
+      // Al volver de Google, el backend redirige a esta página con ?sso=success o ?sso_error=<código>.
+      const urlParams = new URLSearchParams(window.location.search);
+      const ssoError = urlParams.get('sso_error');
+      const ssoSuccess = urlParams.get('sso') === 'success';
+      if (ssoError || ssoSuccess) {
+        // Se limpia la URL para que un F5 no repita el mensaje.
+        window.history.replaceState({}, '', window.location.pathname);
+      }
+
       forms.login.addEventListener('submit', async (event) => {
         event.preventDefault();
         const formData = new FormData(forms.login);
@@ -220,8 +332,7 @@
             return;
           }
 
-          setMessage(`Bienvenido ${data.user?.name || data.user?.username}`, 'success');
-          console.log('Login ok:', data);
+          showSession(data.user);
         } catch (error) {
           setMessage('No se pudo conectar con el servidor', 'error');
         }
@@ -293,6 +404,12 @@
       if (resetToken) {
         tabs.forEach((tab) => { tab.hidden = true; });
         showForm('reset');
+      } else if (ssoError) {
+        setMessage(ssoErrorMessages[ssoError] || ssoErrorMessages.sso_failed, 'error');
+      } else {
+        // Con ?sso=success se confirma la sesión y, si falla, se avisa.
+        // Sin parámetros solo se restaura una sesión previa (renovándola si hace falta), sin mostrar errores.
+        restoreSession({ announceFailure: ssoSuccess });
       }
 
       forms.register.addEventListener('submit', async (event) => {
