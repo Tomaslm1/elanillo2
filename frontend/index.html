@@ -118,6 +118,66 @@
       }
       .sso-button:hover { background: #f8fafc; }
       .sso-button:disabled { opacity: 0.6; cursor: wait; }
+      textarea {
+        border: 1px solid #cbd5e1;
+        border-radius: 10px;
+        padding: 12px 14px;
+        font-size: 1rem;
+        font-family: inherit;
+        resize: vertical;
+      }
+      .projects-card {
+        width: min(560px, 92vw);
+        background: white;
+        border-radius: 16px;
+        box-shadow: 0 18px 45px rgba(15, 23, 42, 0.12);
+        padding: 28px;
+      }
+      .projects-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 20px;
+      }
+      .projects-header h1 { margin: 0; font-size: 1.3rem; color: #1e293b; }
+      .projects-header .helper { margin: 4px 0 0; }
+      .projects-card h2 { margin: 24px 0 12px; font-size: 1.05rem; color: #1e293b; }
+      #projectForm { display: flex; }
+      .project-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .project-item {
+        border: 1px solid #e2e8f0;
+        border-radius: 12px;
+        padding: 14px 16px;
+      }
+      .project-item-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .project-name { font-weight: 700; color: #1e293b; overflow-wrap: anywhere; }
+      .project-description { margin: 6px 0 0; font-size: 0.9rem; color: #475569; overflow-wrap: anywhere; }
+      .project-meta { margin: 8px 0 0; font-size: 0.8rem; color: #64748b; }
+      .role-badge {
+        flex-shrink: 0;
+        border-radius: 999px;
+        padding: 3px 10px;
+        font-size: 0.78rem;
+        font-weight: 700;
+        background: #edf2ff;
+        color: #1d4ed8;
+      }
+      .role-badge.owner { background: #dcfce7; color: #15803d; }
+      .empty-state { color: #64748b; font-size: 0.92rem; margin: 0; }
+      button[type="submit"]:disabled { opacity: 0.6; cursor: wait; }
       .status {
         min-height: 20px;
         margin-top: 10px;
@@ -128,7 +188,7 @@
     </style>
   </head>
   <body>
-    <div class="auth-card">
+    <div class="auth-card" id="authView">
       <div class="tabs">
         <button class="tab active" data-tab="login" type="button">Iniciar sesión</button>
         <button class="tab" data-tab="register" type="button">Registrarse</button>
@@ -192,6 +252,33 @@
       <div id="status" class="status"></div>
     </div>
 
+    <!-- Vista de proyectos: se muestra cuando hay sesión activa y reemplaza a la tarjeta de login -->
+    <div class="projects-card" id="projectsView" hidden>
+      <div class="projects-header">
+        <div>
+          <h1>Mis proyectos</h1>
+          <p class="helper" id="sessionUser"></p>
+        </div>
+        <button class="text-link" id="logoutButton" type="button">Cerrar sesión</button>
+      </div>
+
+      <ul class="project-list" id="projectList"></ul>
+
+      <h2>Crear proyecto</h2>
+      <form id="projectForm">
+        <label>
+          Nombre
+          <input type="text" name="name" maxlength="80" placeholder="Ej: Rediseño del sitio" required />
+        </label>
+        <label>
+          Descripción (opcional)
+          <textarea name="description" rows="3" maxlength="300" placeholder="¿De qué trata el proyecto?"></textarea>
+        </label>
+        <button type="submit" id="projectSubmit">Crear proyecto</button>
+      </form>
+      <div id="projectsStatus" class="status"></div>
+    </div>
+
     <script>
       const apiBase = 'http://localhost:3001';
       const tabs = document.querySelectorAll('.tab');
@@ -253,22 +340,162 @@
         return response;
       }
 
-      function showSession(user) {
-        setMessage(`Sesión iniciada: ${user?.name || user?.username}. `, 'success');
-        const logoutButton = document.createElement('button');
-        logoutButton.type = 'button';
-        logoutButton.className = 'text-link';
-        logoutButton.textContent = 'Cerrar sesión';
-        logoutButton.addEventListener('click', async () => {
-          try {
-            await fetch(`${apiBase}/api/logout`, { method: 'POST', credentials: 'include' });
-            setMessage('Sesión cerrada', 'success');
-          } catch (error) {
-            setMessage('No se pudo cerrar la sesión', 'error');
-          }
-        });
-        statusEl.appendChild(logoutButton);
+      // --- Vistas: login <-> proyectos ---
+      const authView = document.getElementById('authView');
+      const projectsView = document.getElementById('projectsView');
+      const projectListEl = document.getElementById('projectList');
+      const projectForm = document.getElementById('projectForm');
+      const projectSubmit = document.getElementById('projectSubmit');
+      const projectsStatusEl = document.getElementById('projectsStatus');
+
+      const roleLabels = { owner: 'Propietario', editor: 'Editor', viewer: 'Lector' };
+      let projects = [];
+
+      function setProjectsMessage(message, type = '') {
+        projectsStatusEl.textContent = message;
+        projectsStatusEl.className = `status ${type}`.trim();
       }
+
+      // Vuelve a la pantalla de login (cierre de sesión o sesión vencida).
+      function showAuthView(message = '', type = '') {
+        projects = [];
+        projectsView.hidden = true;
+        authView.hidden = false;
+        showForm('login');
+        if (message) setMessage(message, type);
+      }
+
+      // Con sesión activa: muestra la vista de proyectos y carga la lista.
+      function showSession(user) {
+        authView.hidden = true;
+        projectsView.hidden = false;
+        document.getElementById('sessionUser').textContent = user?.name || user?.username || '';
+        setProjectsMessage('');
+        loadProjects();
+      }
+
+      // Se arma el DOM con textContent (no innerHTML): el nombre y la descripción los escribe el usuario,
+      // y con innerHTML un nombre como <img onerror=...> ejecutaría código en el navegador (XSS).
+      function renderProjects() {
+        projectListEl.replaceChildren();
+
+        if (projects.length === 0) {
+          const empty = document.createElement('li');
+          empty.className = 'empty-state';
+          empty.textContent = 'Aún no tienes proyectos. Crea el primero abajo.';
+          projectListEl.appendChild(empty);
+          return;
+        }
+
+        projects.forEach((project) => {
+          const item = document.createElement('li');
+          item.className = 'project-item';
+
+          const top = document.createElement('div');
+          top.className = 'project-item-top';
+          const name = document.createElement('span');
+          name.className = 'project-name';
+          name.textContent = project.name;
+          const badge = document.createElement('span');
+          badge.className = `role-badge ${project.role}`;
+          badge.textContent = roleLabels[project.role] || project.role;
+          top.append(name, badge);
+          item.appendChild(top);
+
+          if (project.description) {
+            const description = document.createElement('p');
+            description.className = 'project-description';
+            description.textContent = project.description;
+            item.appendChild(description);
+          }
+
+          const meta = document.createElement('p');
+          meta.className = 'project-meta';
+          meta.textContent = `${project.memberCount} ${project.memberCount === 1 ? 'miembro' : 'miembros'}`;
+          item.appendChild(meta);
+
+          projectListEl.appendChild(item);
+        });
+      }
+
+      // Si el servidor responde 401 incluso después de intentar renovar, la sesión terminó.
+      function handleSessionExpired() {
+        showAuthView('Tu sesión expiró. Inicia sesión de nuevo.', 'error');
+      }
+
+      async function loadProjects() {
+        projectListEl.replaceChildren();
+        const loading = document.createElement('li');
+        loading.className = 'empty-state';
+        loading.textContent = 'Cargando proyectos...';
+        projectListEl.appendChild(loading);
+
+        try {
+          const response = await fetchWithRefresh('/api/projects');
+          if (response.status === 401) return handleSessionExpired();
+          const data = await response.json();
+          if (!response.ok) {
+            projectListEl.replaceChildren();
+            setProjectsMessage(data.error || 'No se pudieron cargar los proyectos', 'error');
+            return;
+          }
+          projects = data.projects;
+          renderProjects();
+        } catch (error) {
+          projectListEl.replaceChildren();
+          setProjectsMessage('No se pudo conectar con el servidor', 'error');
+        }
+      }
+
+      projectForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const formData = new FormData(projectForm);
+        const payload = {
+          name: String(formData.get('name') || '').trim(),
+          description: String(formData.get('description') || '').trim(),
+        };
+
+        // Validación en el cliente para dar feedback inmediato (el servidor valida igual).
+        if (!payload.name) {
+          setProjectsMessage('El nombre del proyecto es obligatorio', 'error');
+          return;
+        }
+
+        projectSubmit.disabled = true; // evita crear duplicados con doble clic
+        setProjectsMessage('Creando proyecto...');
+        try {
+          const response = await fetchWithRefresh('/api/projects', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          if (response.status === 401) return handleSessionExpired();
+          const data = await response.json();
+
+          if (!response.ok) {
+            setProjectsMessage(data.error || 'No se pudo crear el proyecto', 'error');
+            return;
+          }
+
+          projects.unshift(data.project); // el más nuevo arriba, igual que el orden del servidor
+          renderProjects();
+          projectForm.reset();
+          setProjectsMessage(`Proyecto "${data.project.name}" creado`, 'success');
+        } catch (error) {
+          setProjectsMessage('No se pudo conectar con el servidor', 'error');
+        } finally {
+          projectSubmit.disabled = false;
+        }
+      });
+
+      document.getElementById('logoutButton').addEventListener('click', async () => {
+        try {
+          await fetch(`${apiBase}/api/logout`, { method: 'POST', credentials: 'include' });
+          showAuthView('Sesión cerrada', 'success');
+        } catch (error) {
+          setProjectsMessage('No se pudo cerrar la sesión', 'error');
+        }
+      });
 
       async function restoreSession({ announceFailure = false } = {}) {
         try {
