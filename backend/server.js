@@ -191,22 +191,29 @@ app.post('/api/reset-password', async (req, res) => {
   return res.json({ message: 'Contraseña actualizada correctamente' });
 });
 
-// Devuelve el usuario de la sesión actual.
+// Middleware: exige un access token válido y deja el usuario en req.user.
+// Lo usan /api/me y todas las rutas de proyectos.
 // Si el access token venció responde 401 (con code) y el frontend llama a /api/refresh.
-app.get('/api/me', (req, res) => {
+function requireAuth(req, res, next) {
   const token = req.cookies?.token;
   if (!token) return res.status(401).json({ error: 'No autenticado', code: 'NO_TOKEN' });
   try {
     const payload = jwt.verify(token, JWT_SECRET);
     const user = findUserById(payload.sub);
     if (!user) return res.status(401).json({ error: 'Token inválido', code: 'INVALID_TOKEN' });
-    return res.json({ user: serializeUser(user) });
+    req.user = user;
+    return next();
   } catch (err) {
     if (err.name === 'TokenExpiredError') {
       return res.status(401).json({ error: 'Token expirado', code: 'TOKEN_EXPIRED' });
     }
     return res.status(401).json({ error: 'Token inválido', code: 'INVALID_TOKEN' });
   }
+}
+
+// Devuelve el usuario de la sesión actual.
+app.get('/api/me', requireAuth, (req, res) => {
+  return res.json({ user: serializeUser(req.user) });
 });
 
 // Cambia un refresh token válido por un access token nuevo.
@@ -246,6 +253,105 @@ app.post('/api/logout', (req, res) => {
   if (refreshToken) refreshTokens.delete(hashToken(refreshToken));
   clearSession(res);
   return res.json({ message: 'Sesión cerrada' });
+});
+
+// --- Proyectos y colaboradores ---
+// En memoria igual que users. Cada proyecto guarda sus miembros con un rol:
+//   owner  -> creó el proyecto; es el único que puede invitar (se asigna solo al crear)
+//   editor / viewer -> roles que se pueden asignar al invitar
+// El owner también está en `members`, así "ya es miembro" cubre también el caso de invitarse a sí mismo.
+const projects = [];
+const INVITABLE_ROLES = ['editor', 'viewer'];
+const PROJECT_NAME_MAX = 80;
+const PROJECT_DESCRIPTION_MAX = 300;
+
+function sameId(a, b) {
+  return String(a) === String(b);
+}
+
+function findMembership(project, userId) {
+  return project.members.find((member) => sameId(member.userId, userId));
+}
+
+// Un proyecto visto desde un usuario concreto: incluye el rol que ese usuario tiene en él.
+function serializeProject(project, userId) {
+  return {
+    id: project.id,
+    name: project.name,
+    description: project.description,
+    role: findMembership(project, userId)?.role,
+    memberCount: project.members.length,
+    createdAt: project.createdAt,
+  };
+}
+
+// Lista solo los proyectos donde el usuario es miembro (como owner o invitado).
+app.get('/api/projects', requireAuth, (req, res) => {
+  const mine = projects
+    .filter((project) => findMembership(project, req.user.id))
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .map((project) => serializeProject(project, req.user.id));
+  return res.json({ projects: mine });
+});
+
+app.post('/api/projects', requireAuth, (req, res) => {
+  const name = String(req.body?.name || '').trim();
+  const description = String(req.body?.description || '').trim();
+
+  if (!name) return res.status(400).json({ error: 'El nombre del proyecto es obligatorio' });
+  if (name.length > PROJECT_NAME_MAX) {
+    return res.status(400).json({ error: `El nombre no puede superar ${PROJECT_NAME_MAX} caracteres` });
+  }
+  if (description.length > PROJECT_DESCRIPTION_MAX) {
+    return res.status(400).json({ error: `La descripción no puede superar ${PROJECT_DESCRIPTION_MAX} caracteres` });
+  }
+
+  const project = {
+    id: crypto.randomUUID(),
+    name,
+    description,
+    createdAt: Date.now(),
+    members: [{ userId: req.user.id, role: 'owner' }],
+  };
+  projects.push(project);
+
+  return res.status(201).json({ project: serializeProject(project, req.user.id) });
+});
+
+// Invitar colaborador: body { email, role }. Solo el owner puede hacerlo.
+// El orden de las validaciones importa:
+//   404 -> el proyecto no existe, o existe pero quien pregunta no es miembro (no se revela que existe)
+//   403 -> es miembro pero no owner
+//   400 -> datos inválidos (recién acá, para no dar detalles a quien no tiene permiso)
+//   404 -> el correo no pertenece a ningún usuario
+//   409 -> ya es miembro
+app.post('/api/projects/:projectId/members', requireAuth, (req, res) => {
+  const project = projects.find((candidate) => candidate.id === req.params.projectId);
+  const requesterMembership = project && findMembership(project, req.user.id);
+  if (!requesterMembership) return res.status(404).json({ error: 'Proyecto no encontrado' });
+  if (requesterMembership.role !== 'owner') {
+    return res.status(403).json({ error: 'Solo el propietario puede invitar colaboradores' });
+  }
+
+  const email = String(req.body?.email || '').trim().toLowerCase();
+  const role = String(req.body?.role || '').trim();
+  if (!email) return res.status(400).json({ error: 'Ingresa el correo del colaborador' });
+  if (!INVITABLE_ROLES.includes(role)) {
+    return res.status(400).json({ error: `El rol debe ser uno de: ${INVITABLE_ROLES.join(', ')}` });
+  }
+
+  const invitedUser = users.find((candidate) => candidate.username.toLowerCase() === email);
+  if (!invitedUser) return res.status(404).json({ error: 'No existe un usuario registrado con ese correo' });
+
+  if (findMembership(project, invitedUser.id)) {
+    return res.status(409).json({ error: 'El usuario ya es miembro del proyecto' });
+  }
+
+  project.members.push({ userId: invitedUser.id, role });
+  return res.status(201).json({
+    message: 'Colaborador agregado',
+    member: { ...serializeUser(invitedUser), role },
+  });
 });
 
 // --- SSO con Google (OAuth 2.0 / OpenID Connect, flujo "authorization code") ---
