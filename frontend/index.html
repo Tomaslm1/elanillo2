@@ -177,6 +177,45 @@
       }
       .role-badge.owner { background: #dcfce7; color: #15803d; }
       .empty-state { color: #64748b; font-size: 0.92rem; margin: 0; }
+      #outcomeForm, .outcome-edit-form { display: flex; flex-direction: column; gap: 10px; }
+      #outcomeForm[hidden] { display: none; }
+      .project-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 8px; }
+      .project-actions .project-meta { margin: 0; }
+      .row-buttons { display: flex; gap: 12px; }
+      .row-buttons .text-link { font-size: 0.85rem; }
+      .outcome-line { margin: 6px 0 0; font-size: 0.9rem; color: #334155; overflow-wrap: anywhere; }
+      .outcome-line strong { color: #1e293b; }
+      .edit-buttons { display: flex; gap: 10px; }
+      .edit-buttons button { flex: 1; }
+      .secondary-button {
+        border: 1px solid #cbd5e1;
+        border-radius: 10px;
+        padding: 10px;
+        background: white;
+        color: #1e293b;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      .notice {
+        margin: 0;
+        padding: 10px 12px;
+        border-radius: 10px;
+        font-size: 0.88rem;
+        background: #fef3c7;
+        color: #92400e;
+      }
+      .conflict-box {
+        border: 1px solid #fca5a5;
+        background: #fef2f2;
+        border-radius: 10px;
+        padding: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        font-size: 0.88rem;
+        color: #7f1d1d;
+      }
+      .conflict-box p { margin: 0; overflow-wrap: anywhere; }
       button[type="submit"]:disabled { opacity: 0.6; cursor: wait; }
       .status {
         min-height: 20px;
@@ -279,6 +318,39 @@
       <div id="projectsStatus" class="status"></div>
     </div>
 
+    <!-- Detalle de un proyecto: resultados esperados del producto -->
+    <div class="projects-card" id="detailView" hidden>
+      <div class="projects-header">
+        <div>
+          <h1 id="detailTitle"></h1>
+          <p class="helper" id="detailRole"></p>
+        </div>
+        <button class="text-link" id="backButton" type="button">&larr; Mis proyectos</button>
+      </div>
+
+      <h2 style="margin-top: 0">Resultados esperados</h2>
+      <p class="helper">Define cómo sabrás que el producto tuvo éxito: qué resultado esperas, cómo se mide y cuál es la meta.</p>
+      <ul class="project-list" id="outcomeList"></ul>
+
+      <p class="helper" id="readOnlyNote" hidden>Tienes rol de lector: puedes ver los resultados, pero no editarlos.</p>
+      <form id="outcomeForm">
+        <label>
+          Resultado esperado
+          <input type="text" name="title" maxlength="120" placeholder="Ej: Aumentar las ventas online" required />
+        </label>
+        <label>
+          Métrica (cómo se mide)
+          <input type="text" name="metric" maxlength="160" placeholder="Ej: Ventas mensuales en el sitio" />
+        </label>
+        <label>
+          Meta
+          <input type="text" name="target" maxlength="80" placeholder="Ej: +20% en 3 meses" />
+        </label>
+        <button type="submit" id="outcomeSubmit">Agregar resultado</button>
+      </form>
+      <div id="detailStatus" class="status"></div>
+    </div>
+
     <script>
       const apiBase = 'http://localhost:3001';
       const tabs = document.querySelectorAll('.tab');
@@ -359,6 +431,8 @@
       // Vuelve a la pantalla de login (cierre de sesión o sesión vencida).
       function showAuthView(message = '', type = '') {
         projects = [];
+        stopOutcomePolling();
+        document.getElementById('detailView').hidden = true;
         projectsView.hidden = true;
         authView.hidden = false;
         showForm('login');
@@ -412,7 +486,16 @@
           const meta = document.createElement('p');
           meta.className = 'project-meta';
           meta.textContent = `${project.memberCount} ${project.memberCount === 1 ? 'miembro' : 'miembros'}`;
-          item.appendChild(meta);
+
+          const actions = document.createElement('div');
+          actions.className = 'project-actions';
+          const open = document.createElement('button');
+          open.type = 'button';
+          open.className = 'text-link';
+          open.textContent = 'Abrir';
+          open.addEventListener('click', () => openProject(project));
+          actions.append(meta, open);
+          item.appendChild(actions);
 
           projectListEl.appendChild(item);
         });
@@ -487,6 +570,364 @@
           projectSubmit.disabled = false;
         }
       });
+
+      // --- Detalle del proyecto: resultados esperados ---
+      // Edición colaborativa: cada resultado trae `version`. Al guardar se envía la versión que se vio;
+      // si otra persona guardó antes, el servidor responde 409 y aquí se pregunta qué hacer
+      // (nunca se sobrescribe en silencio). Mientras la pantalla está abierta se consulta cada
+      // pocos segundos para mostrar los cambios de los demás.
+      const OUTCOME_POLL_MS = 5000;
+      const detailView = document.getElementById('detailView');
+      const outcomeListEl = document.getElementById('outcomeList');
+      const outcomeForm = document.getElementById('outcomeForm');
+      const outcomeSubmit = document.getElementById('outcomeSubmit');
+      const detailStatusEl = document.getElementById('detailStatus');
+
+      let currentProject = null;
+      let outcomes = [];
+      let canEdit = false;
+      let outcomeSignature = '';
+      let outcomePollTimer = null;
+      // Resultados en edición: id -> { draft, baseVersion, conflict, saving }
+      // El borrador vive aquí (no en el DOM) para que no se pierda si la lista se redibuja.
+      const editing = new Map();
+
+      function setDetailMessage(message, type = '') {
+        detailStatusEl.textContent = message;
+        detailStatusEl.className = `status ${type}`.trim();
+      }
+
+      function stopOutcomePolling() {
+        if (outcomePollTimer) clearInterval(outcomePollTimer);
+        outcomePollTimer = null;
+      }
+
+      function formatTime(timestamp) {
+        return new Date(timestamp).toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' });
+      }
+
+      function openProject(project) {
+        currentProject = project;
+        outcomes = [];
+        outcomeSignature = '';
+        editing.clear();
+        setDetailMessage('');
+        document.getElementById('detailTitle').textContent = project.name;
+        document.getElementById('detailRole').textContent = `Tu rol: ${roleLabels[project.role] || project.role}`;
+        projectsView.hidden = true;
+        detailView.hidden = false;
+        renderOutcomes();
+        loadOutcomes();
+        stopOutcomePolling();
+        outcomePollTimer = setInterval(() => loadOutcomes({ silent: true }), OUTCOME_POLL_MS);
+      }
+
+      function closeProject() {
+        stopOutcomePolling();
+        currentProject = null;
+        editing.clear();
+        detailView.hidden = true;
+        projectsView.hidden = false;
+        loadProjects();
+      }
+
+      async function loadOutcomes({ silent = false } = {}) {
+        if (!currentProject) return;
+        const projectId = currentProject.id;
+        try {
+          const response = await fetchWithRefresh(`/api/projects/${projectId}/outcomes`);
+          if (!currentProject || currentProject.id !== projectId) return; // el usuario ya salió
+          if (response.status === 401) return handleSessionExpired();
+          if (response.status === 404) {
+            closeProject();
+            setProjectsMessage('Ya no tienes acceso a ese proyecto', 'error');
+            return;
+          }
+          const data = await response.json();
+          if (!response.ok) {
+            if (!silent) setDetailMessage(data.error || 'No se pudieron cargar los resultados', 'error');
+            return;
+          }
+          // Solo se redibuja si algo cambió, para no molestar a quien está escribiendo.
+          const signature = JSON.stringify([data.canEdit, data.outcomes.map((o) => [o.id, o.version])]);
+          if (signature === outcomeSignature) return;
+          outcomeSignature = signature;
+          outcomes = data.outcomes;
+          canEdit = data.canEdit;
+          renderOutcomes();
+        } catch (error) {
+          if (!silent) setDetailMessage('No se pudo conectar con el servidor', 'error');
+        }
+      }
+
+      function textLine(label, value) {
+        const line = document.createElement('p');
+        line.className = 'outcome-line';
+        const strong = document.createElement('strong');
+        strong.textContent = `${label}: `;
+        line.append(strong, document.createTextNode(value));
+        return line;
+      }
+
+      function makeButton(text, className, onClick) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = className;
+        button.textContent = text;
+        button.addEventListener('click', onClick);
+        return button;
+      }
+
+      function renderOutcomes() {
+        document.getElementById('readOnlyNote').hidden = canEdit;
+        outcomeForm.hidden = !canEdit;
+        outcomeListEl.replaceChildren();
+
+        if (outcomes.length === 0) {
+          const empty = document.createElement('li');
+          empty.className = 'empty-state';
+          empty.textContent = canEdit ? 'Aún no hay resultados esperados. Agrega el primero abajo.' : 'Aún no hay resultados esperados.';
+          outcomeListEl.appendChild(empty);
+          return;
+        }
+
+        outcomes.forEach((outcome) => {
+          const item = document.createElement('li');
+          item.className = 'project-item';
+          item.appendChild(editing.has(outcome.id) ? renderEditForm(outcome) : renderOutcomeView(outcome));
+          outcomeListEl.appendChild(item);
+        });
+      }
+
+      function renderOutcomeView(outcome) {
+        const box = document.createElement('div');
+        const title = document.createElement('span');
+        title.className = 'project-name';
+        title.textContent = outcome.title;
+        box.appendChild(title);
+        if (outcome.metric) box.appendChild(textLine('Métrica', outcome.metric));
+        if (outcome.target) box.appendChild(textLine('Meta', outcome.target));
+
+        const actions = document.createElement('div');
+        actions.className = 'project-actions';
+        const meta = document.createElement('p');
+        meta.className = 'project-meta';
+        meta.textContent = outcome.updatedByName
+          ? `Modificado por ${outcome.updatedByName} · ${formatTime(outcome.updatedAt)}`
+          : `Modificado · ${formatTime(outcome.updatedAt)}`;
+        actions.appendChild(meta);
+        if (canEdit) {
+          const buttons = document.createElement('div');
+          buttons.className = 'row-buttons';
+          buttons.append(
+            makeButton('Editar', 'text-link', () => startEditing(outcome)),
+            makeButton('Eliminar', 'text-link', () => deleteOutcome(outcome)),
+          );
+          actions.appendChild(buttons);
+        }
+        box.appendChild(actions);
+        return box;
+      }
+
+      function startEditing(outcome) {
+        editing.set(outcome.id, {
+          draft: { title: outcome.title, metric: outcome.metric, target: outcome.target },
+          baseVersion: outcome.version, // la versión que el usuario está viendo al empezar a editar
+          conflict: null,
+          saving: false,
+        });
+        setDetailMessage('');
+        renderOutcomes();
+      }
+
+      function renderEditForm(outcome) {
+        const state = editing.get(outcome.id);
+        const form = document.createElement('form');
+        form.className = 'outcome-edit-form';
+
+        [['title', 'Resultado esperado', 120], ['metric', 'Métrica', 160], ['target', 'Meta', 80]].forEach(([key, label, max]) => {
+          const wrapper = document.createElement('label');
+          wrapper.textContent = label;
+          const input = document.createElement('input');
+          input.type = 'text';
+          input.name = key;
+          input.maxLength = max;
+          input.value = state.draft[key];
+          input.disabled = state.saving || Boolean(state.conflict);
+          input.addEventListener('input', () => { state.draft[key] = input.value; });
+          wrapper.appendChild(input);
+          form.appendChild(wrapper);
+        });
+
+        // Aviso preventivo: alguien guardó mientras este usuario editaba.
+        if (!state.conflict && outcome.version !== state.baseVersion) {
+          const notice = document.createElement('p');
+          notice.className = 'notice';
+          notice.textContent = `${outcome.updatedByName || 'Otra persona'} modificó este resultado mientras lo editabas. Al guardar podrás elegir qué hacer.`;
+          form.appendChild(notice);
+        }
+
+        if (state.conflict) {
+          form.appendChild(renderConflict(outcome.id, state));
+        } else {
+          const buttons = document.createElement('div');
+          buttons.className = 'edit-buttons';
+          const save = document.createElement('button');
+          save.type = 'submit';
+          save.textContent = state.saving ? 'Guardando...' : 'Guardar';
+          save.disabled = state.saving;
+          buttons.append(save, makeButton('Cancelar', 'secondary-button', () => { editing.delete(outcome.id); renderOutcomes(); }));
+          form.appendChild(buttons);
+        }
+
+        form.addEventListener('submit', (event) => {
+          event.preventDefault();
+          saveOutcome(outcome.id);
+        });
+        return form;
+      }
+
+      // Panel de conflicto: muestra lo que guardó la otra persona y deja elegir.
+      function renderConflict(id, state) {
+        const box = document.createElement('div');
+        box.className = 'conflict-box';
+        const current = state.conflict;
+
+        const intro = document.createElement('p');
+        intro.textContent = `${current.updatedByName || 'Otra persona'} guardó cambios antes que tú:`;
+        const theirs = document.createElement('p');
+        theirs.textContent = `"${current.title}"${current.metric ? ` · Métrica: ${current.metric}` : ''}${current.target ? ` · Meta: ${current.target}` : ''}`;
+        box.append(intro, theirs);
+
+        const buttons = document.createElement('div');
+        buttons.className = 'edit-buttons';
+        buttons.append(
+          // Sobrescribir es una decisión explícita: se reintenta con la versión actual del servidor.
+          makeButton('Mantener mis cambios', 'secondary-button', () => {
+            state.baseVersion = current.version;
+            state.conflict = null;
+            saveOutcome(id);
+          }),
+          makeButton('Usar la versión actual', 'secondary-button', () => { editing.delete(id); renderOutcomes(); }),
+        );
+        box.appendChild(buttons);
+        return box;
+      }
+
+      function replaceOutcome(updated) {
+        outcomes = outcomes.map((outcome) => (outcome.id === updated.id ? updated : outcome));
+        outcomeSignature = JSON.stringify([canEdit, outcomes.map((o) => [o.id, o.version])]);
+      }
+
+      async function saveOutcome(id) {
+        const state = editing.get(id);
+        if (!state || state.saving) return;
+        if (!state.draft.title.trim()) {
+          setDetailMessage('El resultado esperado es obligatorio', 'error');
+          return;
+        }
+
+        state.saving = true;
+        renderOutcomes();
+        try {
+          const response = await fetchWithRefresh(`/api/projects/${currentProject.id}/outcomes/${id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...state.draft, version: state.baseVersion }),
+          });
+          if (response.status === 401) return handleSessionExpired();
+          const data = await response.json();
+
+          if (response.status === 409 && data.code === 'VERSION_CONFLICT') {
+            state.conflict = data.current; // no se guardó nada: el usuario decide
+            replaceOutcome(data.current);
+            setDetailMessage('Otra persona modificó este resultado. Elige qué hacer con tus cambios.', 'error');
+          } else if (response.status === 404) {
+            editing.delete(id);
+            outcomeSignature = '';
+            await loadOutcomes();
+            setDetailMessage('Ese resultado ya no existe (alguien lo eliminó).', 'error');
+          } else if (!response.ok) {
+            setDetailMessage(data.error || 'No se pudo guardar el resultado', 'error');
+          } else {
+            editing.delete(id);
+            replaceOutcome(data.outcome);
+            setDetailMessage('Resultado actualizado', 'success');
+          }
+        } catch (error) {
+          setDetailMessage('No se pudo conectar con el servidor', 'error');
+        } finally {
+          state.saving = false;
+          renderOutcomes();
+        }
+      }
+
+      async function deleteOutcome(outcome) {
+        if (!window.confirm(`¿Eliminar "${outcome.title}"?`)) return;
+        try {
+          const response = await fetchWithRefresh(
+            `/api/projects/${currentProject.id}/outcomes/${outcome.id}?version=${outcome.version}`,
+            { method: 'DELETE' },
+          );
+          if (response.status === 401) return handleSessionExpired();
+          const data = await response.json();
+          if (response.status === 409) {
+            outcomeSignature = '';
+            await loadOutcomes();
+            setDetailMessage('Otra persona modificó este resultado antes de que lo eliminaras. Revisa los cambios y vuelve a intentar.', 'error');
+          } else if (!response.ok && response.status !== 404) {
+            setDetailMessage(data.error || 'No se pudo eliminar el resultado', 'error');
+          } else {
+            outcomes = outcomes.filter((candidate) => candidate.id !== outcome.id);
+            outcomeSignature = JSON.stringify([canEdit, outcomes.map((o) => [o.id, o.version])]);
+            renderOutcomes();
+            setDetailMessage('Resultado eliminado', 'success');
+          }
+        } catch (error) {
+          setDetailMessage('No se pudo conectar con el servidor', 'error');
+        }
+      }
+
+      outcomeForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const formData = new FormData(outcomeForm);
+        const payload = {
+          title: String(formData.get('title') || '').trim(),
+          metric: String(formData.get('metric') || '').trim(),
+          target: String(formData.get('target') || '').trim(),
+        };
+        if (!payload.title) {
+          setDetailMessage('El resultado esperado es obligatorio', 'error');
+          return;
+        }
+
+        outcomeSubmit.disabled = true;
+        setDetailMessage('Guardando...');
+        try {
+          const response = await fetchWithRefresh(`/api/projects/${currentProject.id}/outcomes`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          if (response.status === 401) return handleSessionExpired();
+          const data = await response.json();
+          if (!response.ok) {
+            setDetailMessage(data.error || 'No se pudo agregar el resultado', 'error');
+            return;
+          }
+          outcomes.push(data.outcome);
+          outcomeSignature = JSON.stringify([canEdit, outcomes.map((o) => [o.id, o.version])]);
+          renderOutcomes();
+          outcomeForm.reset();
+          setDetailMessage('Resultado agregado', 'success');
+        } catch (error) {
+          setDetailMessage('No se pudo conectar con el servidor', 'error');
+        } finally {
+          outcomeSubmit.disabled = false;
+        }
+      });
+
+      document.getElementById('backButton').addEventListener('click', closeProject);
 
       document.getElementById('logoutButton').addEventListener('click', async () => {
         try {
