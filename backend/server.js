@@ -312,6 +312,7 @@ app.post('/api/projects', requireAuth, (req, res) => {
     description,
     createdAt: Date.now(),
     members: [{ userId: req.user.id, role: 'owner' }],
+    outcomes: [], // resultados esperados del producto (ver más abajo)
   };
   projects.push(project);
 
@@ -352,6 +353,146 @@ app.post('/api/projects/:projectId/members', requireAuth, (req, res) => {
     message: 'Colaborador agregado',
     member: { ...serializeUser(invitedUser), role },
   });
+});
+
+// --- Edición concurrente: versionado optimista ---
+// Cada elemento editable (resultado, funcionalidad, respuesta...) tiene un número `version`
+// que empieza en 1 y sube con cada cambio. Para modificarlo o borrarlo, el cliente envía la
+// versión que vio. Si no coincide, alguien más lo cambió antes: se responde 409 con el valor actual
+// y NO se guarda nada, así nadie pisa el trabajo de otro sin enterarse.
+// Node ejecuta cada petición de corrido (sin await en medio), por eso "comprobar + guardar" es atómico.
+function parseVersion(raw) {
+  if (typeof raw !== 'number' && typeof raw !== 'string') return null;
+  if (typeof raw === 'string' && raw.trim() === '') return null;
+  const version = Number(raw);
+  return Number.isInteger(version) && version >= 1 ? version : null;
+}
+
+// --- Permisos dentro de un proyecto ---
+// owner y editor pueden modificar contenido; viewer solo lee.
+const EDITOR_ROLES = ['owner', 'editor'];
+
+// Carga el proyecto y comprueba que quien pregunta es miembro.
+// Si no lo es responde 404 (no se revela que el proyecto existe) y devuelve null.
+function loadProjectForMember(req, res) {
+  const project = projects.find((candidate) => candidate.id === req.params.projectId);
+  const membership = project && findMembership(project, req.user.id);
+  if (!membership) {
+    res.status(404).json({ error: 'Proyecto no encontrado' });
+    return null;
+  }
+  return { project, membership };
+}
+
+function requireEditor(membership, res) {
+  if (EDITOR_ROLES.includes(membership.role)) return true;
+  res.status(403).json({ error: 'No tienes permiso para editar este proyecto' });
+  return false;
+}
+
+// --- Resultados esperados del producto ---
+// Cada resultado: qué se espera lograr (title), cómo se mide (metric) y la meta (target).
+const OUTCOME_LIMITS = {
+  title: { label: 'El resultado esperado', max: 120 },
+  metric: { label: 'La métrica', max: 160 },
+  target: { label: 'La meta', max: 80 },
+};
+
+function parseOutcomeFields(body) {
+  const fields = {};
+  for (const [key, { label, max }] of Object.entries(OUTCOME_LIMITS)) {
+    fields[key] = String(body?.[key] ?? '').trim();
+    if (fields[key].length > max) return { error: `${label} no puede superar ${max} caracteres` };
+  }
+  if (!fields.title) return { error: 'El resultado esperado es obligatorio' };
+  return { fields };
+}
+
+function serializeOutcome(outcome) {
+  const author = findUserById(outcome.updatedBy);
+  return {
+    id: outcome.id,
+    title: outcome.title,
+    metric: outcome.metric,
+    target: outcome.target,
+    version: outcome.version,
+    updatedAt: outcome.updatedAt,
+    updatedByName: author?.name || author?.username || null, // para mostrar "modificado por ..."
+  };
+}
+
+function conflictResponse(res, outcome) {
+  return res.status(409).json({
+    error: 'Otra persona modificó este resultado mientras lo editabas',
+    code: 'VERSION_CONFLICT',
+    current: serializeOutcome(outcome),
+  });
+}
+
+// Cualquier miembro (también viewer) puede ver. `canEdit` le dice al frontend si mostrar los controles.
+app.get('/api/projects/:projectId/outcomes', requireAuth, (req, res) => {
+  const ctx = loadProjectForMember(req, res);
+  if (!ctx) return;
+  return res.json({
+    outcomes: ctx.project.outcomes.map(serializeOutcome),
+    canEdit: EDITOR_ROLES.includes(ctx.membership.role),
+  });
+});
+
+app.post('/api/projects/:projectId/outcomes', requireAuth, (req, res) => {
+  const ctx = loadProjectForMember(req, res);
+  if (!ctx || !requireEditor(ctx.membership, res)) return;
+
+  const { fields, error } = parseOutcomeFields(req.body);
+  if (error) return res.status(400).json({ error });
+
+  const outcome = {
+    id: crypto.randomUUID(),
+    ...fields,
+    version: 1,
+    updatedBy: req.user.id,
+    updatedAt: Date.now(),
+  };
+  ctx.project.outcomes.push(outcome);
+  return res.status(201).json({ outcome: serializeOutcome(outcome) });
+});
+
+// Editar: body { title, metric, target, version }. `version` es obligatoria (la que el cliente vio).
+app.put('/api/projects/:projectId/outcomes/:outcomeId', requireAuth, (req, res) => {
+  const ctx = loadProjectForMember(req, res);
+  if (!ctx || !requireEditor(ctx.membership, res)) return;
+
+  const outcome = ctx.project.outcomes.find((candidate) => candidate.id === req.params.outcomeId);
+  if (!outcome) return res.status(404).json({ error: 'El resultado ya no existe' });
+
+  const version = parseVersion(req.body?.version);
+  if (!version) return res.status(400).json({ error: 'Falta la versión que estás editando' });
+
+  const { fields, error } = parseOutcomeFields(req.body);
+  if (error) return res.status(400).json({ error });
+
+  if (version !== outcome.version) return conflictResponse(res, outcome);
+
+  Object.assign(outcome, fields, { version: outcome.version + 1, updatedBy: req.user.id, updatedAt: Date.now() });
+  return res.json({ outcome: serializeOutcome(outcome) });
+});
+
+// Eliminar: la versión va en la URL (?version=N). Si alguien editó el resultado mientras tanto,
+// también responde 409: borrarlo descartaría en silencio el cambio de esa persona.
+app.delete('/api/projects/:projectId/outcomes/:outcomeId', requireAuth, (req, res) => {
+  const ctx = loadProjectForMember(req, res);
+  if (!ctx || !requireEditor(ctx.membership, res)) return;
+
+  const index = ctx.project.outcomes.findIndex((candidate) => candidate.id === req.params.outcomeId);
+  if (index === -1) return res.status(404).json({ error: 'El resultado ya no existe' });
+  const outcome = ctx.project.outcomes[index];
+
+  const version = parseVersion(req.query.version);
+  if (!version) return res.status(400).json({ error: 'Falta la versión que estás eliminando' });
+  if (version !== outcome.version) return conflictResponse(res, outcome);
+
+  ctx.project.outcomes.splice(index, 1);
+  return res.json({ message: 'Resultado eliminado' });
 });
 
 // --- SSO con Google (OAuth 2.0 / OpenID Connect, flujo "authorization code") ---
