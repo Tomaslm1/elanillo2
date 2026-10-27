@@ -14,7 +14,7 @@ Todos los comandos se ejecutan dentro de la carpeta `backend` (en GitHub Desktop
 
 1. Copia `.env.example` como `.env` (este archivo **nunca** se sube al repo) y completa:
    - `JWT_SECRET`: cualquier texto largo y aleatorio.
-   - `AZURE_AI_API_KEY`: la clave de Claude en Azure. Pídela por mensaje privado al equipo
+   - `AZURE_AI_API_KEY`: la clave de Claude en Azure. 
    - `DATABASE_URL` y el resto quedan como vienen en el ejemplo.
 2. Instala las dependencias: `npm install`
 3. Levanta tu base de datos: `npm run db:up`
