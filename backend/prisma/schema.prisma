@@ -34,6 +34,205 @@ model User {
   updatedAt     DateTime     @updatedAt
   lastLoginAt   DateTime?
 
+  createdProjects  Project[]       @relation("ProjectCreator")
+  memberships      ProjectMember[]
+  outcomes         Outcome[]
+  requirements     Requirement[]
+  answeredCases    EdgeCase[]
+  stagesUpdated    Stage[]         @relation("StageUpdatedBy")
+  stagesApproved   Stage[]         @relation("StageApprovedBy")
+  auditLogs        AuditLog[]
+
   @@index([email])
   @@map("users")
+}
+
+// ---------- Proyectos y colaboración ----------
+
+enum ProjectRole {
+  OWNER
+  EDITOR
+  VIEWER
+}
+
+model Project {
+  id          String   @id @default(uuid())
+  name        String   @db.VarChar(80)
+  description String   @default("") @db.VarChar(300)
+  createdById String
+  createdBy   User     @relation("ProjectCreator", fields: [createdById], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  members      ProjectMember[]
+  outcomes     Outcome[]
+  requirements Requirement[]
+  edgeCases    EdgeCase[]
+  stages       Stage[]
+  auditLogs    AuditLog[]
+
+  @@map("projects")
+}
+
+model ProjectMember {
+  projectId String
+  userId    String
+  role      ProjectRole
+  createdAt DateTime    @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([projectId, userId])
+  @@index([userId])
+  @@map("project_members")
+}
+
+// ---------- Contenido del proyecto ----------
+// Cada fila con `version` usa bloqueo optimista: se actualiza solo si la versión coincide
+// (updateMany con where { id, version }); si count = 0, otra persona editó antes -> 409.
+
+model Outcome {
+  id          String   @id @default(uuid())
+  projectId   String
+  title       String   @db.VarChar(120)
+  metric      String   @default("") @db.VarChar(160)
+  target      String   @default("") @db.VarChar(80)
+  version     Int      @default(1)
+  updatedById String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  updatedBy User    @relation(fields: [updatedById], references: [id])
+
+  @@index([projectId])
+  @@map("outcomes")
+}
+
+enum RequirementCategory {
+  FUNCTIONAL
+  BUSINESS_RULE
+  INTEGRATION
+}
+
+enum RequirementSource {
+  MANUAL
+  EDGE_CASE
+}
+
+model Requirement {
+  id          String              @id @default(uuid())
+  projectId   String
+  category    RequirementCategory
+  title       String              @db.VarChar(120)
+  description String              @default("") @db.VarChar(500)
+  source      RequirementSource   @default(MANUAL)
+  edgeCaseId  String?             @unique
+  version     Int                 @default(1)
+  updatedById String
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  project   Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  updatedBy User      @relation(fields: [updatedById], references: [id])
+  edgeCase  EdgeCase? @relation(fields: [edgeCaseId], references: [id], onDelete: SetNull)
+
+  @@index([projectId, category])
+  @@map("requirements")
+}
+
+enum EdgeCaseType {
+  MISSING_DATA
+  INSUFFICIENT_PERMISSIONS
+  NONEXISTENT_RESOURCE
+  FAILED_DEPENDENCY
+}
+
+enum EdgeCaseStatus {
+  PENDING
+  ANSWERED
+}
+
+model EdgeCase {
+  id           String         @id @default(uuid())
+  projectId    String
+  type         EdgeCaseType
+  question     String         @db.VarChar(300)
+  status       EdgeCaseStatus @default(PENDING)
+  answer       String?        @db.VarChar(500)
+  answeredById String?
+  version      Int            @default(1)
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  project     Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  answeredBy  User?        @relation(fields: [answeredById], references: [id], onDelete: SetNull)
+  requirement Requirement?
+
+  @@index([projectId, status])
+  @@map("edge_cases")
+}
+
+// ---------- Etapas de Ideator (decisión 1: cada etapa es un dato estructurado y aprobable) ----------
+
+enum StageKey {
+  INITIAL_DEFINITION
+  DATABASE
+  BACKEND
+  FRONTEND
+  ARCHITECTURE
+}
+
+enum StageStatus {
+  DRAFT
+  APPROVED
+}
+
+model Stage {
+  id           String      @id @default(uuid())
+  projectId    String
+  key          StageKey
+  status       StageStatus @default(DRAFT)
+  data         Json        @default("{}")
+  version      Int         @default(1)
+  updatedById  String
+  approvedById String?
+  approvedAt   DateTime?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  project    Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  updatedBy  User    @relation("StageUpdatedBy", fields: [updatedById], references: [id])
+  approvedBy User?   @relation("StageApprovedBy", fields: [approvedById], references: [id], onDelete: SetNull)
+
+  @@unique([projectId, key])
+  @@map("stages")
+}
+
+// ---------- Historial de cambios (SCRUM-26) ----------
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  ANSWER
+  APPROVE
+}
+
+model AuditLog {
+  id         String      @id @default(uuid())
+  projectId  String
+  userId     String
+  action     AuditAction
+  entityType String      @db.VarChar(40)
+  entityId   String
+  details    Json?
+  createdAt  DateTime    @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id])
+
+  @@index([projectId, createdAt])
+  @@map("audit_logs")
 }

@@ -1,0 +1,26 @@
+# Base de datos local para desarrollo. Cada integrante levanta la suya con:
+#   docker compose up -d db        (o, desde backend/:  npm run db:up)
+# Usa el puerto 5433 para no chocar con un PostgreSQL ya instalado en el computador (5432).
+# Estas credenciales son SOLO para desarrollo local; nunca se usan en producción.
+services:
+  db:
+    image: postgres:16
+    container_name: ideator-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ideator
+      POSTGRES_PASSWORD: ideator
+      POSTGRES_DB: ideator
+    ports:
+      - "5433:5432"
+    volumes:
+      - ideator-db-data:/var/lib/postgresql/data
+      - ./docker/init-test-db.sql:/docker-entrypoint-initdb.d/init-test-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ideator -d ideator"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  ideator-db-data:
