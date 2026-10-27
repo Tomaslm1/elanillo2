@@ -6,6 +6,7 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const cookieParser = require('cookie-parser');
 const cors = require('cors');
+const { registerRequirementRoutes } = require('./requirements');
 
 const app = express();
 const passwordResetTokens = new Map();
@@ -313,6 +314,8 @@ app.post('/api/projects', requireAuth, (req, res) => {
     createdAt: Date.now(),
     members: [{ userId: req.user.id, role: 'owner' }],
     outcomes: [], // resultados esperados del producto (ver más abajo)
+    requirements: [], // requisitos funcionales, reglas de negocio e integraciones (requirements.js)
+    edgeCases: [], // preguntas de casos borde generadas por la IA (requirements.js)
   };
   projects.push(project);
 
@@ -493,6 +496,16 @@ app.delete('/api/projects/:projectId/outcomes/:outcomeId', requireAuth, (req, re
 
   ctx.project.outcomes.splice(index, 1);
   return res.json({ message: 'Resultado eliminado' });
+});
+
+// --- Requisitos y casos borde (ver requirements.js) ---
+registerRequirementRoutes(app, {
+  requireAuth,
+  loadProjectForMember,
+  requireEditor,
+  parseVersion,
+  findUserById,
+  EDITOR_ROLES,
 });
 
 // --- SSO con Google (OAuth 2.0 / OpenID Connect, flujo "authorization code") ---
