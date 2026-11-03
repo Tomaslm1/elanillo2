@@ -7,6 +7,7 @@ const bcrypt = require('bcryptjs');
 const cookieParser = require('cookie-parser');
 const cors = require('cors');
 const { registerRequirementRoutes } = require('./requirements');
+const { registerModelRoutes } = require('./model');
 
 const app = express();
 const passwordResetTokens = new Map();
@@ -316,6 +317,7 @@ app.post('/api/projects', requireAuth, (req, res) => {
     outcomes: [], // resultados esperados del producto (ver más abajo)
     requirements: [], // requisitos funcionales, reglas de negocio e integraciones (requirements.js)
     edgeCases: [], // preguntas de casos borde generadas por la IA (requirements.js)
+    model: { entities: [], relations: [], revision: 0 }, // modelo de datos colaborativo (model.js)
   };
   projects.push(project);
 
@@ -500,6 +502,16 @@ app.delete('/api/projects/:projectId/outcomes/:outcomeId', requireAuth, (req, re
 
 // --- Requisitos y casos borde (ver requirements.js) ---
 registerRequirementRoutes(app, {
+  requireAuth,
+  loadProjectForMember,
+  requireEditor,
+  parseVersion,
+  findUserById,
+  EDITOR_ROLES,
+});
+
+// --- Modelo de datos colaborativo (ver model.js) ---
+registerModelRoutes(app, {
   requireAuth,
   loadProjectForMember,
   requireEditor,
