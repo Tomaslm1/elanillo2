@@ -8,6 +8,7 @@ const cookieParser = require('cookie-parser');
 const cors = require('cors');
 const { registerRequirementRoutes } = require('./requirements');
 const { registerModelRoutes } = require('./model');
+const { registerDesignRoutes } = require('./design');
 
 const app = express();
 const passwordResetTokens = new Map();
@@ -512,6 +513,16 @@ registerRequirementRoutes(app, {
 
 // --- Modelo de datos colaborativo (ver model.js) ---
 registerModelRoutes(app, {
+  requireAuth,
+  loadProjectForMember,
+  requireEditor,
+  parseVersion,
+  findUserById,
+  EDITOR_ROLES,
+});
+
+// --- Etapas de diseño y sus motores: API, navegación, operaciones y coherencia (ver design.js) ---
+registerDesignRoutes(app, {
   requireAuth,
   loadProjectForMember,
   requireEditor,
