@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Ideator · Proyecto</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="project.css" />
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="index.html">ideator<span class="cursor">_</span></a>
+      <a class="back" href="index.html">← proyectos</a>
+      <div class="title-block">
+        <h1 id="projectName">Cargando…</h1>
+        <span class="role-badge" id="myRole"></span>
+      </div>
+      <div class="topbar-actions">
+        <button type="button" class="ghost" id="membersButton">Miembros</button>
+        <button type="button" class="ghost" id="auditButton">Actividad</button>
+      </div>
+    </header>
+
+    <nav class="stepper" id="stepper" aria-label="Etapas"></nav>
+
+    <div id="globalStatus" class="banner" hidden></div>
+
+    <main class="workspace">
+      <section class="panel left" aria-label="Conversación y preguntas">
+        <div id="questionsBox" class="questions"></div>
+        <div class="chat">
+          <h2>Conversación</h2>
+          <ol id="messages" class="messages"></ol>
+          <div id="thinking" class="thinking" hidden>
+            <span class="spinner"></span> La IA está trabajando… (puede tardar alrededor de un minuto)
+          </div>
+          <form id="chatForm" class="chat-form">
+            <textarea id="chatInput" rows="3" maxlength="8000" placeholder="Escribe tu idea, una aclaración o un cambio…"></textarea>
+            <div class="row">
+              <button type="button" id="generateButton" class="secondary" hidden>Generar propuesta con IA</button>
+              <button type="submit" id="sendButton">Enviar</button>
+            </div>
+          </form>
+          <p id="chatHint" class="hint"></p>
+        </div>
+      </section>
+
+      <section class="panel right" aria-label="Contenido de la etapa">
+        <div class="content-toolbar">
+          <div>
+            <h2 id="stageTitle"></h2>
+            <p class="meta" id="stageMeta"></p>
+          </div>
+          <div class="toolbar-buttons">
+            <button type="button" class="ghost" id="historyButton">Historial</button>
+            <button type="button" class="ghost" id="editButton">Editar</button>
+            <button type="button" id="approveButton">Aprobar etapa</button>
+          </div>
+        </div>
+        <div id="findings"></div>
+        <div id="editor" hidden>
+          <p class="hint">Edita el contenido estructurado de la etapa (JSON). Al guardar se valida el formato y la consistencia; si otro integrante guardó antes, se te avisará para que recargues.</p>
+          <textarea id="editorText" spellcheck="false"></textarea>
+          <input id="editorNote" type="text" maxlength="200" placeholder="Describe el cambio (opcional)" />
+          <div class="row">
+            <button type="button" class="ghost" id="cancelEdit">Cancelar</button>
+            <button type="button" id="saveEdit">Guardar cambios</button>
+          </div>
+        </div>
+        <div id="content" class="content"></div>
+      </section>
+    </main>
+
+    <dialog id="dialog">
+      <div class="dialog-head">
+        <h2 id="dialogTitle"></h2>
+        <button type="button" class="ghost" id="dialogClose" aria-label="Cerrar">✕</button>
+      </div>
+      <div id="dialogBody"></div>
+    </dialog>
+
+    <script src="project.js"></script>
+  </body>
+</html>

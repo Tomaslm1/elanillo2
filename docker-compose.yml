@@ -1,0 +1,37 @@
+# Desarrollo local:  docker compose up -d db   (solo Postgres)
+# Todo en contenedores: docker compose up --build
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ideator
+      POSTGRES_PASSWORD: ideator
+      POSTGRES_DB: ideator
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/init-test-db.sql:/docker-entrypoint-initdb.d/init-test-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ideator"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build: ./backend
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: ./backend/.env
+    environment:
+      DATABASE_URL: postgresql://ideator:ideator@db:5432/ideator?schema=public
+      NODE_ENV: production
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./frontend:/frontend:ro
+    profiles: ["full"]
+
+volumes:
+  pgdata:

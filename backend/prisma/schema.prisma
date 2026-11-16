@@ -1,3 +1,5 @@
+// Modelo de datos de Ideator.
+// Cliente: prisma-client-js (CommonJS) + driver adapter @prisma/adapter-pg (obligatorio en Prisma 7).
 generator client {
   provider = "prisma-client-js"
 }
@@ -17,6 +19,40 @@ enum AuthProvider {
   GITHUB
 }
 
+enum ProjectRole {
+  OWNER
+  EDITOR
+  VIEWER
+}
+
+// Etapas del proceso de definición, en orden.
+enum Stage {
+  DEFINITION
+  DATA_MODEL
+  API
+  FRONTEND
+  ARCHITECTURE
+  REVIEW
+}
+
+enum StageStatus {
+  NOT_STARTED
+  DRAFT
+  APPROVED
+  OUTDATED // estaba aprobada, pero una etapa anterior cambió después
+}
+
+enum QuestionStatus {
+  OPEN
+  ANSWERED
+  DISMISSED
+}
+
+enum MessageRole {
+  USER
+  ASSISTANT
+}
+
 model User {
   id            String       @id @default(uuid())
   email         String       @unique
@@ -34,6 +70,194 @@ model User {
   updatedAt     DateTime     @updatedAt
   lastLoginAt   DateTime?
 
+  refreshTokens       RefreshToken[]
+  passwordResetTokens PasswordResetToken[]
+  projectsCreated     Project[]          @relation("ProjectCreator")
+  memberships         ProjectMember[]    @relation("MemberUser")
+  invitationsSent     ProjectMember[]    @relation("MemberInviter")
+  messages            Message[]
+  questionsAnswered   Question[]
+  stageVersions       StageVersion[]
+  auditLogs           AuditLog[]
+
   @@index([email])
   @@map("users")
+}
+
+// Se guarda el hash SHA-256 del token, nunca el token en claro.
+model RefreshToken {
+  id        String   @id @default(uuid())
+  tokenHash String   @unique
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+model PasswordResetToken {
+  id        String   @id @default(uuid())
+  tokenHash String   @unique
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("password_reset_tokens")
+}
+
+model Project {
+  id           String   @id @default(uuid())
+  name         String   @db.VarChar(80)
+  description  String   @default("") @db.VarChar(300)
+  createdById  String
+  currentStage Stage    @default(DEFINITION)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  createdBy User            @relation("ProjectCreator", fields: [createdById], references: [id])
+  members   ProjectMember[]
+  stages    ProjectStage[]
+  messages  Message[]
+  questions Question[]
+  auditLogs AuditLog[]
+  aiJobs    AiJob[]
+
+  @@map("projects")
+}
+
+model ProjectMember {
+  projectId   String
+  userId      String
+  role        ProjectRole
+  invitedById String?
+  createdAt   DateTime    @default(now())
+
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user      User    @relation("MemberUser", fields: [userId], references: [id], onDelete: Cascade)
+  invitedBy User?   @relation("MemberInviter", fields: [invitedById], references: [id], onDelete: SetNull)
+
+  @@id([projectId, userId])
+  @@index([userId])
+  @@map("project_members")
+}
+
+// Estado vigente de cada etapa. `content` es el JSON estructurado de la etapa
+// (ver src/stages/schemas.js). `version` se usa para bloqueo optimista.
+model ProjectStage {
+  id           String      @id @default(uuid())
+  projectId    String
+  stage        Stage
+  status       StageStatus @default(NOT_STARTED)
+  content      Json?
+  version      Int         @default(0)
+  updatedById  String?
+  approvedById String?
+  approvedAt   DateTime?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  project  Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  versions StageVersion[]
+
+  @@unique([projectId, stage])
+  @@map("project_stages")
+}
+
+// Historial: cada cambio de contenido (IA o edición manual) queda como versión con su autor.
+model StageVersion {
+  id             String   @id @default(uuid())
+  projectStageId String
+  version        Int
+  content        Json
+  source         String // "ai" | "manual"
+  note           String   @default("")
+  createdById    String?
+  createdAt      DateTime @default(now())
+
+  projectStage ProjectStage @relation(fields: [projectStageId], references: [id], onDelete: Cascade)
+  createdBy    User?        @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@unique([projectStageId, version])
+  @@map("stage_versions")
+}
+
+model Message {
+  id        String      @id @default(uuid())
+  projectId String
+  stage     Stage
+  role      MessageRole
+  content   String
+  authorId  String?
+  createdAt DateTime    @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  author  User?   @relation(fields: [authorId], references: [id], onDelete: SetNull)
+
+  @@index([projectId, stage, createdAt])
+  @@map("messages")
+}
+
+// Preguntas que la IA (o la revisión de consistencia) deja abiertas.
+// Las `blocking` impiden aprobar la etapa y generar los documentos finales.
+model Question {
+  id           String         @id @default(uuid())
+  projectId    String
+  stage        Stage
+  text         String
+  reason       String         @default("")
+  options      String[]       @default([])
+  blocking     Boolean        @default(false)
+  source       String         @default("ai") // "ai" (conversación) | "review" (revisión de consistencia)
+  status       QuestionStatus @default(OPEN)
+  answer       String?
+  answeredById String?
+  answeredAt   DateTime?
+  createdAt    DateTime       @default(now())
+
+  project    Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  answeredBy User?   @relation(fields: [answeredById], references: [id], onDelete: SetNull)
+
+  @@index([projectId, stage, status])
+  @@map("questions")
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  projectId String
+  userId    String?
+  action    String
+  details   Json?
+  createdAt DateTime @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([projectId, createdAt])
+  @@map("audit_logs")
+}
+
+// Trabajo de IA en segundo plano (un turno puede tardar minutos). Solo uno "running" por proyecto
+// (índice único parcial creado en la migración SQL).
+model AiJob {
+  id          String    @id @default(uuid())
+  projectId   String
+  stage       Stage?
+  kind        String // turn | generate | answers | review
+  status      String    @default("running") // running | succeeded | failed
+  result      Json?
+  error       Json?
+  createdById String?
+  createdAt   DateTime  @default(now())
+  finishedAt  DateTime?
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, status])
+  @@map("ai_jobs")
 }

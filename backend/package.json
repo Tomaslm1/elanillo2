@@ -1,11 +1,16 @@
 {
   "name": "backend",
   "version": "1.0.0",
-  "description": "Backend para el proyecto - login endpoint",
+  "description": "Ideator: backend (API, motor de etapas con IA, exportación de especificaciones)",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "jest --runInBand"
+    "dev": "node --watch server.js",
+    "test": "jest --runInBand",
+    "db:up": "docker compose -f ../docker-compose.yml up -d db",
+    "db:migrate": "prisma migrate deploy && prisma generate",
+    "seed": "node prisma/seed.js",
+    "postinstall": "prisma generate"
   },
   "keywords": [],
   "author": "",
@@ -17,12 +22,31 @@
     "supertest": "^6.3.3"
   },
   "dependencies": {
+    "@anthropic-ai/foundry-sdk": "^1.1.1",
+    "@anthropic-ai/sdk": "^1.8.0",
+    "@prisma/adapter-pg": "^7.9.1",
     "@prisma/client": "^7.9.1",
     "bcryptjs": "^2.4.3",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^4.18.2",
-    "jsonwebtoken": "^9.0.0"
+    "jsonwebtoken": "^9.0.0",
+    "openai": "^7.57.0",
+    "pg": "^8.23.1"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "setupFiles": [
+      "<rootDir>/tests/helpers/env.js"
+    ],
+    "setupFilesAfterEnv": [
+      "<rootDir>/tests/helpers/db.js"
+    ],
+    "globalSetup": "<rootDir>/tests/helpers/globalSetup.js",
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "/tests/helpers/"
+    ]
   }
 }
