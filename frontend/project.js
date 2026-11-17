@@ -370,39 +370,64 @@
 
   // ---------- Acciones ----------
   // Ejecuta una acción larga (la IA puede tardar 30-90 s) mostrando progreso visible junto al botón usado y arriba.
+  // Aviso que el contador de progreso no pisa durante unos segundos.
+  let noticeUntil = 0;
+  function busyNotice(message) {
+    noticeUntil = Date.now() + 5000;
+    banner(message, 'error');
+  }
+  const BUSY_BUTTONS = '#answerButton, #sendButton, #approveButton, #generateButton';
   async function withBusy(fn, trigger, startedAt = Date.now()) {
-    if (state.busy) return;
+    if (state.busy) {
+      // Nunca ignorar en silencio: avisar que hay un trabajo en curso.
+      busyNotice('La IA todavía está trabajando en la petición anterior. Espera a que termine y vuelve a intentarlo.');
+      return false;
+    }
     state.busy = true;
     const started = startedAt;
     const originalLabel = trigger?.textContent;
+    const sendLabel = $('sendButton').textContent;
     const tick = () => {
-      const seconds = Math.round((Date.now() - started) / 1000);
-      const text = `La IA está trabajando… ${seconds}s (puede tardar 1 a 4 minutos; puedes recargar la página sin perder el trabajo)`;
-      banner(text, 'info');
-      if (trigger) trigger.textContent = `Procesando… ${seconds}s`;
+      const total = Math.max(0, Math.floor((Date.now() - started) / 1000));
+      const elapsed = `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+      const text = `La IA está trabajando… ${elapsed} (puede tardar 1 a 4 minutos; puedes recargar la página sin perder el trabajo)`;
+      if (Date.now() > noticeUntil) banner(text, 'info');
+      document.querySelectorAll(BUSY_BUTTONS).forEach((b) => {
+        b.disabled = true;
+        b.title = 'La IA está trabajando; espera a que termine.';
+        if (b === trigger) b.textContent = `Procesando… ${elapsed}`;
+        else if (b.id === 'answerButton' || b.id === 'sendButton') b.textContent = `IA trabajando… ${elapsed}`;
+      });
     };
     tick();
     const timer = setInterval(tick, 1000);
     $('thinking').hidden = false;
-    document.querySelectorAll('#answerButton, #sendButton, #approveButton, #generateButton').forEach((b) => { b.disabled = true; });
     try {
       await fn();
     } catch (err) {
       banner(describeError(err), 'error');
     } finally {
       clearInterval(timer);
-      if ($('globalStatus').textContent.startsWith('La IA está trabajando')) banner('');
+      if (/^La IA (está|todavía está) trabajando/.test($('globalStatus').textContent)) banner('');
+      noticeUntil = 0;
       if (trigger && originalLabel) trigger.textContent = originalLabel;
+      $('sendButton').textContent = sendLabel;
+      document.querySelectorAll(BUSY_BUTTONS).forEach((b) => { b.title = ''; });
       state.busy = false;
       $('thinking').hidden = true;
       await reloadAll().catch(() => {});
     }
+    return true;
   }
 
   $('chatForm').addEventListener('submit', async (event) => {
     event.preventDefault();
     const message = $('chatInput').value.trim();
     if (!message) return;
+    if (state.busy) {
+      busyNotice('La IA todavía está trabajando en la petición anterior. Tu mensaje no se envió; espera a que termine.');
+      return;
+    }
     // Muestra el mensaje de inmediato mientras la IA responde.
     const ol = $('messages');
     ol.querySelector('.empty')?.remove();
